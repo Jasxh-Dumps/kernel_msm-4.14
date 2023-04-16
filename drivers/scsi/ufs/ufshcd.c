@@ -51,6 +51,12 @@
 #include "ufs-debugfs.h"
 #include "ufs-qcom.h"
 
+#ifdef VENDOR_EDIT
+//zhenjian Jiang@PSW.BSP.Storage.UFS, 2018-05-04 add for ufs device in /proc/devinfo 
+#include <soc/oppo/device_info.h>
+unsigned long ufs_outstanding;
+#endif
+
 #ifdef CONFIG_DEBUG_FS
 
 static int ufshcd_tag_req_type(struct request *rq)
@@ -2258,6 +2264,13 @@ static void ufshcd_gate_work(struct work_struct *work)
 	unsigned long flags;
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
+#ifdef VENDOR_EDIT
+//yh@BSP.Storage.UFS, 2020-1-15 add for fix race condition during hrtimer active(ufshcd_release/ufshcd_gate_work)
+	if (hba->clk_gating.state == CLKS_OFF)
+	{
+		goto rel_lock;
+	}
+#endif
 	/*
 	 * In case you are here to cancel this work the gating state
 	 * would be marked as REQ_CLKS_ON. In this case save time by
@@ -3842,6 +3855,11 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 	ufshcd_vops_setup_xfer_req(hba, tag, (lrbp->cmd ? true : false));
 
 	err = ufshcd_send_command(hba, tag);
+#ifdef  VENDOR_EDIT
+    //hank.liu@TECH.BSP.Storage.UFS, 2019-04-26, Add for monitor ufs driver io time
+	ufs_outstanding=hba->outstanding_reqs;
+	cmd->request->ufs_io_start = ktime_get();
+#endif
 	if (err) {
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		scsi_dma_unmap(lrbp->cmd);
@@ -4051,7 +4069,10 @@ static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 {
 	struct ufshcd_lrb *lrbp;
 	int err;
-	int tag;
+#ifdef VENDOR_EDIT
+//Tong.Han@Bsp.Group.Tp,2018-6-4,Added for Dealth_healer
+	int tag = 0;
+#endif
 	struct completion wait;
 	unsigned long flags;
 	bool has_read_lock = false;
@@ -5630,22 +5651,34 @@ static int ufshcd_complete_dev_init(struct ufs_hba *hba)
 
 	/* poll for max. 5sec for fDeviceInit flag to clear */
 	while (1) {
-		bool timedout = ktime_after(ktime_get(), timeout);
-		err = ufshcd_query_flag_retry(hba, UPIU_QUERY_OPCODE_READ_FLAG,
-					QUERY_FLAG_IDN_FDEVICEINIT, &flag_res);
-		if (err || !flag_res || timedout)
-			break;
+	#ifdef VENDOR_EDIT
+	    bool timedout = ktime_after(ktime_get(), timeout);
+	    err = ufshcd_query_flag_retry(hba, UPIU_QUERY_OPCODE_READ_FLAG,
+	                QUERY_FLAG_IDN_FDEVICEINIT, &flag_res);
+	   if (err || !flag_res || timedout || i >= 1500)
+	#else
+	    bool timedout = ktime_after(ktime_get(), timeout);
+	    err = ufshcd_query_flag_retry(hba, UPIU_QUERY_OPCODE_READ_FLAG,
+	                QUERY_FLAG_IDN_FDEVICEINIT, &flag_res);
+	    if (err || !flag_res || timedout)
+	#endif
+	        break;
 
-		/*
-		 * Poll for this flag in a tight loop for first 1000 iterations.
-		 * This is same as old logic which is working for most of the
-		 * devices, so continue using the same.
-		 */
-		if (i == 1000)
-			msleep(20);
-		else
-			i++;
+	#ifdef VENDOR_EDIT
+	    if (i == 1000 || (i >= 1000 && i < 1500)) {
+	        usleep_range(1000, 1000); // 1ms sleep
+	    } else {
+	        i++;
+	    }
+	#else
+	    if (i == 1000) {
+	        msleep(20);
+	    } else {
+	        i++;
+	    }
+	#endif
 	}
+
 
 	if (err)
 		dev_err(hba->dev,
@@ -6432,6 +6465,7 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 
 			req = cmd->request;
 			if (req) {
+				cmd->request->flash_io_latency = ktime_us_delta(ktime_get(), cmd->request->ufs_io_start);
 				/* Update IO svc time latency histogram */
 				if (req->lat_hist_enabled) {
 					ktime_t completion;
@@ -6444,6 +6478,15 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 					blk_update_latency_hist(&hba->io_lat_s,
 						(rq_data_dir(req) == READ),
 						delta_us);
+#ifdef VENDOR_EDIT
+//yh@BSP.Storage.UFS, 2019-02-19 add for ufs io latency info calculate
+					if (delta_us > 2000) {
+						trace_printk("ufs_io_latency:%06lld us, io_type:%s, LBA:%08x, size:%d\n",
+								delta_us, (rq_data_dir(req) == READ) ? "R" : "W",
+								req->bio->bi_iter.bi_sector,
+								cpu_to_be32(cmd->sdb.length));
+					}
+#endif
 				}
 			}
 
@@ -7547,7 +7590,10 @@ static int ufshcd_issue_tm_cmd(struct ufs_hba *hba, int lun_id, int task_id,
 	struct utp_upiu_task_req *task_req_upiup;
 	struct Scsi_Host *host;
 	unsigned long flags;
-	int free_slot;
+#ifdef VENDOR_EDIT
+//Tong.Han@Bsp.Group.Tp,2018-6-4,Added for Dealth_healer
+	int free_slot = 0;
+#endif
 	int err;
 	int task_tag;
 
@@ -8235,6 +8281,12 @@ static int ufshcd_scsi_add_wlus(struct ufs_hba *hba)
 	struct scsi_device *sdev_boot = NULL;
 	bool is_bootable_dev = false;
 	bool is_embedded_dev = false;
+#ifdef VENDOR_EDIT
+//yh@PSW.BSP.Storage.UFS, 2018-05-31 add for ufs device in /proc/devinfo
+	static char temp_version[5] = {0};
+	static char vendor[9] = {0};
+	static char model[17] = {0};
+#endif
 
 	if ((hba->dev_info.b_device_sub_class == UFS_DEV_EMBEDDED_BOOTABLE) ||
 	    (hba->dev_info.b_device_sub_class == UFS_DEV_REMOVABLE_BOOTABLE))
@@ -8254,6 +8306,14 @@ static int ufshcd_scsi_add_wlus(struct ufs_hba *hba)
 		goto out;
 	}
 	scsi_device_put(hba->sdev_ufs_device);
+#ifdef VENDOR_EDIT
+//yh@PSW.BSP.Storage.UFS, 2018-05-31 add for ufs device in /proc/devinfo
+	strncpy(temp_version, hba->sdev_ufs_device->rev, 4);
+	strncpy(vendor, hba->sdev_ufs_device->vendor, 8);
+	strncpy(model, hba->sdev_ufs_device->model, 16);
+	register_device_proc("ufs_version", temp_version, vendor);
+	register_device_proc("ufs", model, vendor);
+#endif
 
 	if (is_bootable_dev) {
 		sdev_boot = __scsi_add_device(hba->host, 0, 0,
@@ -8571,6 +8631,13 @@ static void ufshcd_init_desc_sizes(struct ufs_hba *hba)
 		&hba->desc_size.hlth_desc);
 	if (err)
 		hba->desc_size.hlth_desc = QUERY_DESC_HEALTH_DEF_SIZE;
+#ifdef VENDOR_EDIT
+//Hexiaosen@PSW.BSP. 2019/11/19,Add for check storage endurance
+	err = ufshcd_read_desc_length(hba, QUERY_DESC_IDN_HEALTH, 0,
+		&hba->desc_size.hlth_desc);
+	if (err)
+		hba->desc_size.hlth_desc = QUERY_DESC_HEALTH_MAX_SIZE;
+#endif
 }
 
 static void ufshcd_def_desc_sizes(struct ufs_hba *hba)
@@ -8582,6 +8649,11 @@ static void ufshcd_def_desc_sizes(struct ufs_hba *hba)
 	hba->desc_size.unit_desc = QUERY_DESC_UNIT_DEF_SIZE;
 	hba->desc_size.geom_desc = QUERY_DESC_GEOMETRY_DEF_SIZE;
 	hba->desc_size.hlth_desc = QUERY_DESC_HEALTH_DEF_SIZE;
+#ifdef VENDOR_EDIT
+//Hexiaosen@PSW.BSP. 2019/11/19. Add for check storage endurance
+	hba->desc_size.hlth_desc = QUERY_DESC_HEALTH_MAX_SIZE;
+#endif
+
 }
 
 static void ufshcd_apply_pm_quirks(struct ufs_hba *hba)
