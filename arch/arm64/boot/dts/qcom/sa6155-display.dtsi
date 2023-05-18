@@ -44,14 +44,12 @@
 &sde_dp {
 	qcom,ext-disp = <&ext_disp>;
 	qcom,dp-hpd-gpio = <&ioexp 8 0>;
-	qcom,mst-fixed-topology-ports = <1 2>;
 
 	vdda-1p2-supply = <&pm6155_1_l11>;
 	vdda-0p9-supply = <&pm6155_1_l5>;
 	qcom,dp-aux-switch = <0>;
 	pinctrl-names = <0>;
 	qcom,mst-enable;
-	qcom,dp-aux-bridge-sim = <&sde_dp_mst_sim>;
 	qcom,widebus-enable;
 
 	qcom,core-supply-entries {
@@ -214,11 +212,6 @@
 			compatible = "qcom,msm-ext-disp-audio-codec-rx";
 		};
 	};
-
-	sde_dp_mst_sim: qcom,dp-mst-sim {
-		compatible = "qcom,dp-mst-sim";
-	};
-
 	qcom,rmnet-ipa {
 		status="disabled";
 	};

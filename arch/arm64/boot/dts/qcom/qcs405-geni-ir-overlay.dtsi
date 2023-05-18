@@ -27,6 +27,7 @@
 		clock-names = "iface_clk", "serial_clk";
 
 		qcom,geni-ir-wakeup-gpio = <&tlmm 77 IRQ_TYPE_LEVEL_HIGH>;
+		vdda33-supply = <&pms405_l12>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&ir_in_default>;
 
